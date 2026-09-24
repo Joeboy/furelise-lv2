@@ -1,0 +1,19 @@
+@prefix atom: <http://lv2plug.in/ns/ext/atom#> .
+@prefix doap: <http://usefulinc.com/ns/doap#> .
+@prefix lv2: <http://lv2plug.in/ns/lv2core#> .
+@prefix midi: <http://lv2plug.in/ns/ext/midi#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+<https://joebutton.co.uk/lv2/furelise>
+    a lv2:Plugin ;
+    doap:name "Für Elise" ;
+    rdfs:comment "A no-input Für Elise MIDI and square-wave audio generator." ;
+    lv2:requiredFeature <http://lv2plug.in/ns/ext/urid#map> ;
+    lv2:port [
+        a lv2:OutputPort , lv2:AudioPort ;
+        lv2:index 0 ; lv2:symbol "audio_out" ; lv2:name "Audio Out"
+    ] , [
+        a lv2:OutputPort , atom:AtomPort ;
+        atom:bufferType atom:Sequence ; atom:supports midi:MidiEvent ;
+        lv2:index 1 ; lv2:symbol "midi_out" ; lv2:name "MIDI Out"
+    ] .
