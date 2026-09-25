@@ -5,10 +5,11 @@
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 
 <https://joebutton.co.uk/lv2/furelise>
-    a lv2:Plugin ;
+    a lv2:Plugin , lv2:GeneratorPlugin ;
     doap:name "Für Elise" ;
     rdfs:comment "A no-input Für Elise MIDI and square-wave audio generator." ;
     lv2:requiredFeature <http://lv2plug.in/ns/ext/urid#map> ;
+    lv2:optionalFeature lv2:hardRTCapable ;
     lv2:port [
         a lv2:OutputPort , lv2:AudioPort ;
         lv2:index 0 ; lv2:symbol "audio_out" ; lv2:name "Audio Out"
