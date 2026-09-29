@@ -65,18 +65,28 @@ struct Note {
 
 const EMPTY_NOTE: Note = Note { pitch: 0, ticks: 0 };
 
+#[derive(Clone, Copy)]
+struct PreparedNote {
+    pitch: u8,
+    frames: u64,
+    phase_step: f32,
+    attack_end: f32,
+    decay_end: f32,
+    release_start: f32,
+    attack_gain: f32,
+    decay_gain: f32,
+    release_gain: f32,
+}
+
 struct State {
     audio: *mut f32,
     midi: *mut Sequence,
-    sample_rate: f64,
-    frames_per_tick: f64,
-    phase: f64,
-    frequency: f64,
+    phase: f32,
     frame: u64,
     note_start: u64,
     sequence_urid: u32,
     midi_urid: u32,
-    notes: [Note; MAX_NOTES],
+    notes: [PreparedNote; MAX_NOTES],
     note_count: usize,
     note_index: usize,
     started: bool,
@@ -200,6 +210,26 @@ fn frequency(pitch: u8) -> f64 {
     unsafe { 440.0 * pow(2.0, (f64::from(pitch) - 69.0) / 12.0) }
 }
 
+fn prepare_note(note: Note, sample_rate: f64, frames_per_tick: f64) -> PreparedNote {
+    let frames = unsafe { floor(f64::from(note.ticks) * frames_per_tick + 0.5) }.max(1.0) as u64;
+    let duration = frames as f32;
+    let rate = sample_rate as f32;
+    let attack = (0.055 * rate).min(duration * 0.4).max(1.0);
+    let decay = (0.025 * rate).min((duration - attack) * 0.4).max(1.0);
+    let release = (0.045 * rate).min(duration * 0.3).max(1.0);
+    PreparedNote {
+        pitch: note.pitch,
+        frames,
+        phase_step: (frequency(note.pitch) / sample_rate) as f32,
+        attack_end: attack,
+        decay_end: attack + decay,
+        release_start: duration - release,
+        attack_gain: 1.0 / attack,
+        decay_gain: 0.45 / decay,
+        release_gain: 0.55 / release,
+    }
+}
+
 unsafe extern "C" fn instantiate(
     _: *const Descriptor,
     sample_rate: f64,
@@ -235,15 +265,14 @@ unsafe extern "C" fn instantiate(
     if state.is_null() {
         return ptr::null_mut();
     }
+    let frames_per_tick = sample_rate * f64::from(tempo) / 1_000_000.0 / f64::from(division);
     unsafe {
-        (*state).sample_rate = sample_rate;
-        (*state).frames_per_tick =
-            sample_rate * f64::from(tempo) / 1_000_000.0 / f64::from(division);
         (*state).sequence_urid = sequence_urid;
         (*state).midi_urid = midi_urid;
-        (*state).notes = notes;
+        for (index, note) in notes.iter().copied().take(note_count).enumerate() {
+            (*state).notes[index] = prepare_note(note, sample_rate, frames_per_tick);
+        }
         (*state).note_count = note_count;
-        (*state).frequency = frequency(notes.get_unchecked(0).pitch);
     }
     state.cast()
 }
@@ -263,7 +292,6 @@ unsafe extern "C" fn activate(handle: *mut c_void) {
     state.note_start = 0;
     state.note_index = 0;
     state.phase = 0.0;
-    state.frequency = frequency(unsafe { state.notes.get_unchecked(0) }.pitch);
     state.started = false;
 }
 
@@ -291,16 +319,6 @@ unsafe fn write_note(state: &mut State, capacity: u32, frame: u32, status: u8, p
     sequence.atom.size += 24;
 }
 
-fn note_frames(state: &State) -> u64 {
-    unsafe {
-        floor(
-            f64::from(state.notes.get_unchecked(state.note_index).ticks) * state.frames_per_tick
-                + 0.5,
-        )
-        .max(1.0) as u64
-    }
-}
-
 unsafe extern "C" fn run(handle: *mut c_void, sample_count: u32) {
     let state = unsafe { &mut *handle.cast::<State>() };
     if state.audio.is_null() || state.midi.is_null() {
@@ -319,16 +337,10 @@ unsafe extern "C" fn run(handle: *mut c_void, sample_count: u32) {
         state.started = true;
     }
     for i in 0..sample_count {
-        let mut duration = note_frames(state);
-        if state.frame - state.note_start >= duration {
+        let note = unsafe { *state.notes.get_unchecked(state.note_index) };
+        if state.frame - state.note_start >= note.frames {
             unsafe {
-                write_note(
-                    state,
-                    capacity,
-                    i,
-                    0x80,
-                    state.notes.get_unchecked(state.note_index).pitch,
-                );
+                write_note(state, capacity, i, 0x80, note.pitch);
             }
             state.note_index += 1;
             if state.note_index == state.note_count {
@@ -336,8 +348,6 @@ unsafe extern "C" fn run(handle: *mut c_void, sample_count: u32) {
             }
             state.note_start = state.frame;
             state.phase = 0.0;
-            state.frequency =
-                frequency(unsafe { state.notes.get_unchecked(state.note_index) }.pitch);
             unsafe {
                 write_note(
                     state,
@@ -347,31 +357,25 @@ unsafe extern "C" fn run(handle: *mut c_void, sample_count: u32) {
                     state.notes.get_unchecked(state.note_index).pitch,
                 );
             }
-            duration = note_frames(state);
         }
-        let position = (state.frame - state.note_start) as f64;
-        let duration = duration as f64;
-        let attack = (0.055 * state.sample_rate).min(duration * 0.4).max(1.0);
-        let decay = (0.025 * state.sample_rate)
-            .min((duration - attack) * 0.4)
-            .max(1.0);
-        let release = (0.045 * state.sample_rate).min(duration * 0.3).max(1.0);
-        let envelope = if position < attack {
-            position / attack
-        } else if position < attack + decay {
-            1.0 - 0.45 * (position - attack) / decay
-        } else if position > duration - release {
-            0.55 * ((duration - position) / release).max(0.0)
+        let note = unsafe { *state.notes.get_unchecked(state.note_index) };
+        let position = (state.frame - state.note_start) as f32;
+        let envelope = if position < note.attack_end {
+            position * note.attack_gain
+        } else if position < note.decay_end {
+            1.0 - (position - note.attack_end) * note.decay_gain
+        } else if position > note.release_start {
+            ((note.frames as f32 - position) * note.release_gain).max(0.0)
         } else {
             0.55
         };
-        state.phase += state.frequency / state.sample_rate;
+        state.phase += note.phase_step;
         if state.phase >= 1.0 {
             state.phase -= 1.0;
         }
         unsafe {
             *state.audio.add(i as usize) =
-                (if state.phase < 0.5 { 1.0 } else { -1.0 }) * envelope as f32 * 0.18;
+                (if state.phase < 0.5 { 1.0 } else { -1.0 }) * envelope * 0.18;
         }
         state.frame += 1;
     }
