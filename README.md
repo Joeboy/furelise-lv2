@@ -16,3 +16,13 @@ make
 
 That creates a `furelise.lv2` bundle under `build/`. Theoretically it should
 work on Linux / macOS / Windows, but I've only tested it on Linux.
+
+For PicoLV2 on a Pico 2, install Rust's `thumbv8m.main-none-eabihf` target and
+the Arm GNU toolchain, then run:
+
+```sh
+make bundle-pico PICOLV2_SDK_DIR=/path/to/picolv2/plugin-src/sdk
+```
+
+This creates `build/picolv2/furelise.lv2`. Set `PICO_BUNDLE_ROOT` to stage the
+bundle elsewhere. The regular `make` target still builds the desktop bundle.
